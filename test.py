@@ -1,4 +1,5 @@
 # ----- Imports -----
+
 import gradio as gr # For the web app
 import cv2 # For webcam access
 
@@ -11,6 +12,54 @@ import os # For file paths
 from PIL import Image # For opening images 
 import numpy as np # For array conversion
 from tqdm import tqdm # For progress bars
+
+
+# ----- Face croping ----- #
+
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+def crop_face(frame):
+    """Detect and crop the face while maintaining aspect ratio"""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+    
+    if len(faces) > 0:
+        # Get the largest face
+        largest_face = max(faces, key=lambda x: x[2] * x[3])
+        x, y, w, h = largest_face
+        
+        # Add padding around the face (20%)
+        padding = int(max(w, h) * 0.2)
+        x = max(0, x - padding)
+        y = max(0, y - padding)
+        w = min(frame.shape[1] - x, w + 2*padding)
+        h = min(frame.shape[0] - y, h + 2*padding)
+        
+        # Crop the face
+        face = frame[y:y+h, x:x+w]
+        
+        # Resize while maintaining aspect ratio
+        target_size = max(TARGET_SIZE)
+        aspect_ratio = w/h
+        
+        if aspect_ratio > 1:
+            new_w = target_size
+            new_h = int(target_size / aspect_ratio)
+        else:
+            new_h = target_size
+            new_w = int(target_size * aspect_ratio)
+            
+        face_resized = cv2.resize(face, (new_w, new_h))
+        
+        # Create a square image with padding
+        square_img = np.zeros((target_size, target_size, 3), dtype=np.uint8)
+        y_offset = (target_size - new_h) // 2
+        x_offset = (target_size - new_w) // 2
+        square_img[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = face_resized
+        
+        return True, square_img
+    return False, frame
+
 
 # ===================== #
 # ===== LBP + kNN ===== #
@@ -130,7 +179,7 @@ for emotion_directory in tqdm(os.listdir(training_path), desc="HOG + SVM Trainin
 
 # Scale features and train SVM
 hog_features_scaled = scaler.fit_transform(hog_features)
-print("Fitting HOG + SVM...")
+print("Fitting HOG results into SVM ... (might take 2-3 minutes)")
 svm_classifier.fit(hog_features_scaled, hog_emotions)
 print("Done")
 
@@ -181,16 +230,22 @@ def start_app(AllowWebcam, WebcamNumber):
         print("web cam started")
 
     while AllowWebcam:
+        feedback_text = ""
         ret, frame = cap.read()
         if not ret:
             print("Failed to grab frame from webcam")
             break
-            
+
+        # Detect and crop face
+        face_found, cropped_frame = crop_face(frame)
+        if not face_found:
+            feedback_text = "No face detected"
+
         # Convert to RGB for Gradio display
         display_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Convert to grayscale for processing
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray_frame = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2GRAY)
 
         # Ensure consistent size
         gray_frame_resized = cv2.resize(gray_frame, TARGET_SIZE)
@@ -204,7 +259,7 @@ def start_app(AllowWebcam, WebcamNumber):
         # Process with HOG + SVM
         hog_frame, hog_prediction = process_hog(gray_frame_pil)
 
-        yield display_frame, lbp_frame, knn_prediction, hog_frame, hog_prediction, gray_frame_pil
+        yield display_frame, gray_frame, lbp_frame, knn_prediction, hog_frame, hog_prediction, gray_frame_pil, feedback_text
         
     if AllowWebcam:
         cap.release()
@@ -226,6 +281,9 @@ with gr.Blocks() as demo:
             
             # Outputs component
             webcam = gr.Image(label="Webcam Feed")
+
+        webcam_cropped = gr.Image(label="Cropped Face Feed")
+        feedback = gr.Textbox(label="Info :", interactive=False)
         
         with gr.Row():
             with gr.Column():
@@ -242,7 +300,7 @@ with gr.Blocks() as demo:
     start_button.click(
         fn=start_app,       # Function to call
         inputs=[allow_button, webcam_number],       # Inputs to the function
-        outputs=[webcam, knn_video, knn_prediction, hog_video, hog_prediction, cnn]      # Outputs from the function
+        outputs=[webcam, webcam_cropped, knn_video, knn_prediction, hog_video, hog_prediction, cnn, feedback]      # Outputs from the function
     )
 
 # Launch the app
