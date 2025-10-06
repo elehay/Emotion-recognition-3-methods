@@ -1,7 +1,20 @@
+#  ----- Prerequisite ----- #
+# !!!!!!!!!!!!!!!!!!!!!!!!! #
+
+# To make the code below work, you need to download the pre-trained weights from:
+# run : git clone https://github.com/nmfadil/FER-Pretrained-MiniXception.git
+
+
+
 # ----- Imports -----
 
 import gradio as gr # For the web app
 import cv2 # For webcam access
+
+import tensorflow as tf # for cnn
+from tensorflow import keras
+from tensorflow.keras.models import load_model
+from tensorflow.keras.optimizers import Adam
 
 from skimage.feature import local_binary_pattern, hog # For LBP and HOG
 from sklearn.neighbors import KNeighborsClassifier # For KNN
@@ -12,7 +25,6 @@ import os # For file paths
 from PIL import Image # For opening images 
 import numpy as np # For array conversion
 from tqdm import tqdm # For progress bars
-
 
 # ----- Face croping ----- #
 
@@ -136,9 +148,10 @@ def process_knn(image):
 # ===================== #
 
 # HOG parameters
-cell_size = (8, 8)     # 8x8 pixels per cell
-block_size = (2, 2)    # 2x2 cells per block
-orientations = 9       # 9 orientation bins
+
+cell_size = (8, 8)
+block_size = (2, 2)
+orientations = 9
 
 # Initialize SVM classifier and feature scaler
 svm_classifier = LinearSVC(random_state=42)
@@ -184,17 +197,16 @@ svm_classifier.fit(hog_features_scaled, hog_emotions)
 print("Done")
 
 def process_hog(image):
-    
+    # Convert image to numpy array with float64 precision for gradient computation
     img_array = np.array(image, dtype=np.float64)
     
-    # Calculate HOG features
     features = hog(img_array,
-                  orientations=orientations,
-                  pixels_per_cell=cell_size,
-                  cells_per_block=block_size,
-                  block_norm='L2-Hys',
-                  feature_vector=True,
-                  visualize=True)
+                  orientations=orientations,    # Number of orientation bins (9)
+                  pixels_per_cell=cell_size,   # Cell size for histograms (8x8)
+                  cells_per_block=block_size,  # Block size for normalization (2x2 cells)
+                  block_norm='L2-Hys',         # Normalization method
+                  feature_vector=True,         # Concatenate into 1D feature vector
+                  visualize=True)              # Get visualization
     
     # Separate features and visualization
     hog_features, hog_image = features
@@ -213,6 +225,24 @@ def process_hog(image):
     
     return hog_image, prediction[0]
 
+
+# ============================= #
+# ===== mini-Xception cnn ===== #
+# ============================= #
+
+# Load the pre-trained emotion detection model (adjust the path to where you have it stored)
+model = load_model(os.path.join("FER-Pretrained-MiniXception","fer2013_mini_XCEPTION.102-0.66.hdf5"), compile=False)
+
+
+model.compile(
+    optimizer=Adam(learning_rate=0.0001), # Use the correct argument learning_rate
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+
+    )
+
+# Define emotion labels (as per FER-2013 dataset)
+emotion_labels = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral']
 
 
 # ========================= #
@@ -259,7 +289,22 @@ def start_app(AllowWebcam, WebcamNumber):
         # Process with HOG + SVM
         hog_frame, hog_prediction = process_hog(gray_frame_pil)
 
-        yield display_frame, gray_frame, lbp_frame, knn_prediction, hog_frame, hog_prediction, gray_frame_pil, feedback_text
+        # Process with mini-Xception cnn
+        # Convert PIL image to numpy array
+        cnn_input = np.array(gray_frame_pil)
+        # Resize to 64x64
+        cnn_input = cv2.resize(cnn_input, (64, 64))
+        # Normalize pixel values
+        cnn_input = cnn_input.astype('float32') / 255.0
+        # Add batch and channel dimensions
+        cnn_input = np.expand_dims(cnn_input, axis=-1)  # Add channel dimension
+        cnn_input = np.expand_dims(cnn_input, axis=0)   # Add batch dimension
+        # Get prediction
+        emotion_prediction = model.predict(cnn_input, verbose=0)
+        max_index = np.argmax(emotion_prediction[0])
+        cnn_prediction = emotion_labels[max_index]
+
+        yield display_frame, lbp_frame, knn_prediction, hog_frame, hog_prediction, gray_frame_pil, cnn_prediction, feedback_text
         
     if AllowWebcam:
         cap.release()
@@ -282,7 +327,6 @@ with gr.Blocks() as demo:
             # Outputs component
             webcam = gr.Image(label="Webcam Feed")
 
-        webcam_cropped = gr.Image(label="Cropped Face Feed")
         feedback = gr.Textbox(label="Info :", interactive=False)
         
         with gr.Row():
@@ -292,7 +336,10 @@ with gr.Blocks() as demo:
             with gr.Column():
                 hog_video = gr.Image(label="HOG + SVM Feed")
                 hog_prediction = gr.Textbox(label="Emotion HOG + SVM", interactive=False)
-            cnn = gr.Image(label="CNN Feed")
+            with gr.Column():
+                cnn = gr.Image(label="CNN Feed")
+                cnn_prediction = gr.Textbox(label="Emotion mini-Xception CNN", interactive=False)
+            
 
 
 
@@ -300,7 +347,7 @@ with gr.Blocks() as demo:
     start_button.click(
         fn=start_app,       # Function to call
         inputs=[allow_button, webcam_number],       # Inputs to the function
-        outputs=[webcam, webcam_cropped, knn_video, knn_prediction, hog_video, hog_prediction, cnn, feedback]      # Outputs from the function
+        outputs=[webcam, knn_video, knn_prediction, hog_video, hog_prediction, cnn, cnn_prediction, feedback]      # Outputs from the function
     )
 
 # Launch the app
