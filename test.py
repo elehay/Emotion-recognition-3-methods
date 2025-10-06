@@ -1,9 +1,12 @@
+# Emotion recognition using three methods: LBP + kNN, HOG + SVM, and mini-Xception CNN
+# Made by Ewen Le Hay using Copilot (Claude sonnet 3.5)
+
 #  ----- Prerequisite ----- #
 # !!!!!!!!!!!!!!!!!!!!!!!!! #
 
-# To make the code below work, you need to download the pre-trained weights from:
+# To make the code below work, you need to download the pre-trained weights
 # run : git clone https://github.com/nmfadil/FER-Pretrained-MiniXception.git
-
+# (from the directory where this file is located)
 
 
 # ----- Imports -----
@@ -25,6 +28,7 @@ import os # For file paths
 from PIL import Image # For opening images 
 import numpy as np # For array conversion
 from tqdm import tqdm # For progress bars
+import time # For timing measurements
 
 # ----- Face croping ----- #
 
@@ -131,8 +135,10 @@ def process_knn(image):
     # Calculate the histogram of LBP
     hist, _ = np.histogram(lbp.ravel(), bins=n_bins, range=(0, n_bins), density=True)
     
-    # Predict the emotion using the KNN
+    # Predict the emotion using the KNN and get probabilities
     prediction = neigh.predict([hist])
+    probabilities = neigh.predict_proba([hist])[0]
+    confidence = max(probabilities)
 
     # Convert back to uint8 for saving
     lbp_normalized = ((lbp - lbp.min()) * (255 / (lbp.max() - lbp.min()))).astype(np.uint8)
@@ -140,7 +146,7 @@ def process_knn(image):
     # Convert numpy array back to PIL Image
     new_img = Image.fromarray(lbp_normalized)
 
-    return new_img, prediction[0]
+    return new_img, prediction[0], confidence
 
 
 # ===================== #
@@ -149,12 +155,12 @@ def process_knn(image):
 
 # HOG parameters
 
-cell_size = (6, 6)
+cell_size = (8, 8)
 block_size = (2, 2)
 orientations = 8
 
 # Initialize SVM classifier and feature scaler
-svm_classifier = LinearSVC(random_state=42)
+svm_classifier = LinearSVC()
 scaler = StandardScaler()
 
 # Lists to store HOG features and emotions
@@ -200,45 +206,36 @@ def process_hog(image):
     # Convert image to numpy array with float64 precision for gradient computation
     img_array = np.array(image, dtype=np.float64)
     
-    # Calculer le HOG avec des paramètres ajustés pour une meilleure visualisation
+    # Calculate the HOG
     features = hog(img_array,
-                  orientations=orientations,             # Réduit à 8 pour des directions plus claires
-                  pixels_per_cell=cell_size,     # Cellules plus petites pour plus de détail
-                  cells_per_block=block_size,     # Maintient les blocs 2x2
-                  block_norm='L2-Hys',        # Normalisation standard
-                  visualize=True,             # Active la visualisation
-                  transform_sqrt=True)        # Applique une transformation racine carrée pour améliorer le contraste
-    
-    # Separate features and visualization
-    hog_features, hog_image = features
-    
-    # Scale features pour la classification
-    hog_features_redim = hog(img_array,
                             orientations=orientations,
                             pixels_per_cell=cell_size,
                             cells_per_block=block_size,
                             block_norm='L2-Hys',
-                            feature_vector=True)
-    hog_features_scaled = scaler.transform([hog_features_redim])
+                            feature_vector=True,
+                            visualize=True,
+                            transform_sqrt=True)
+    hog_features, hog_image = features
+    hog_features_scaled = scaler.transform([hog_features])
     
     # Predict emotion
     prediction = svm_classifier.predict(hog_features_scaled)
+    #confidence = np.max(svm_classifier.predict_proba(hog_features_scaled))
     
-    # Améliore la visualisation du HOG
-    # Normalise l'image entre 0 et 1
+    # Normalise the image
     hog_image = np.clip(hog_image, 0, 10 * hog_image.mean())
     hog_image = (hog_image - hog_image.min()) / (hog_image.max() - hog_image.min())
     
-    # Convertit en uint8 pour l'affichage
+    # Convert to uint8 for display
     hog_image = (hog_image * 255).astype(np.uint8)
     
-    # Applique une égalisation d'histogramme pour améliorer le contraste
+    # Equalize the histogram
     hog_image = cv2.equalizeHist(hog_image)
     
     # Convert to PIL Image
     hog_image = Image.fromarray(hog_image)
     
-    return hog_image, prediction[0]
+    return hog_image, prediction[0] #, confidence
 
 
 # ============================= #
@@ -311,32 +308,53 @@ def start_app(AllowWebcam, WebcamNumber):
         gray_frame_pil = Image.fromarray(gray_frame_resized)
         gray_frame_pil_for_cnn = Image.fromarray(gray_frame_resized_for_cnn)
 
+
+        
         # Process with LBP + kNN
-        lbp_frame, knn_prediction = process_knn(gray_frame_pil)
+        start_time = time.time()
+        lbp_frame, knn_prediction, knn_conf = process_knn(gray_frame_pil)
+        end_time = time.time()
+        knn_time = (end_time - start_time)*1000
         # Resize LBP output for display
         lbp_frame = lbp_frame.resize((192, 192), Image.Resampling.NEAREST)
         
+
         # Process with HOG + SVM
+        start_time = time.time()
+        #hog_frame, hog_prediction, hog_conf = process_hog(gray_frame_pil)
         hog_frame, hog_prediction = process_hog(gray_frame_pil)
+        end_time = time.time()
+        hog_time = (end_time - start_time)*1000
         # Resize HOG output for display
         hog_frame = hog_frame.resize((192, 192), Image.Resampling.NEAREST)
 
+
         # Process with mini-Xception cnn
         # Convert PIL image to numpy array
+        start_time = time.time()
         cnn_input = np.array(gray_frame_pil_for_cnn)
         # Normalize pixel values
         cnn_input = cnn_input.astype('float32') / 255.0
         # Add batch and channel dimensions
         cnn_input = np.expand_dims(cnn_input, axis=-1)  # Add channel dimension
         cnn_input = np.expand_dims(cnn_input, axis=0)   # Add batch dimension
-        # Get prediction
+        # Get prediction and probabilities
         emotion_prediction = model.predict(cnn_input, verbose=0)
         max_index = np.argmax(emotion_prediction[0])
         cnn_prediction = emotion_labels[max_index]
+        cnn_confidence = float(emotion_prediction[0][max_index])
+        end_time = time.time()
+        cnn_time = (end_time - start_time)*1000
         # Create larger display version of input
         gray_frame_large = gray_frame_pil.resize((192, 192), Image.Resampling.LANCZOS)
 
-        yield display_frame, lbp_frame, knn_prediction, hog_frame, hog_prediction, gray_frame_large, cnn_prediction, feedback_text
+        # Format predictions with confidence scores
+        knn_text = f"{knn_prediction} ({knn_conf:.2%}) - {knn_time:.0f}ms"
+        #hog_text = f"{hog_prediction} ({hog_conf:.2%}) - {hog_time:.0f}ms"
+        hog_text = f"{hog_prediction} - {hog_time:.0f}ms"
+        cnn_text = f"{cnn_prediction} ({cnn_confidence:.2%}) - {cnn_time:.0f}ms"
+
+        yield display_frame, lbp_frame, knn_text, hog_frame, hog_text, gray_frame_large, cnn_text, feedback_text
         
     if AllowWebcam:
         cap.release()
