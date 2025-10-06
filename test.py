@@ -285,9 +285,13 @@ def start_app(AllowWebcam, WebcamNumber):
 
         # Process with LBP + kNN
         lbp_frame, knn_prediction = process_knn(gray_frame_pil)
+        # Resize LBP output for display
+        lbp_frame = lbp_frame.resize((192, 192), Image.Resampling.NEAREST)
         
         # Process with HOG + SVM
         hog_frame, hog_prediction = process_hog(gray_frame_pil)
+        # Resize HOG output for display
+        hog_frame = hog_frame.resize((192, 192), Image.Resampling.NEAREST)
 
         # Process with mini-Xception cnn
         # Convert PIL image to numpy array
@@ -303,8 +307,10 @@ def start_app(AllowWebcam, WebcamNumber):
         emotion_prediction = model.predict(cnn_input, verbose=0)
         max_index = np.argmax(emotion_prediction[0])
         cnn_prediction = emotion_labels[max_index]
+        # Create larger display version of input
+        gray_frame_large = gray_frame_pil.resize((192, 192), Image.Resampling.LANCZOS)
 
-        yield display_frame, lbp_frame, knn_prediction, hog_frame, hog_prediction, gray_frame_pil, cnn_prediction, feedback_text
+        yield display_frame, lbp_frame, knn_prediction, hog_frame, hog_prediction, gray_frame_large, cnn_prediction, feedback_text
         
     if AllowWebcam:
         cap.release()
