@@ -149,9 +149,9 @@ def process_knn(image):
 
 # HOG parameters
 
-cell_size = (8, 8)
+cell_size = (6, 6)
 block_size = (2, 2)
-orientations = 9
+orientations = 8
 
 # Initialize SVM classifier and feature scaler
 svm_classifier = LinearSVC(random_state=42)
@@ -192,7 +192,7 @@ for emotion_directory in tqdm(os.listdir(training_path), desc="HOG + SVM Trainin
 
 # Scale features and train SVM
 hog_features_scaled = scaler.fit_transform(hog_features)
-print("Fitting HOG results into SVM ... (might take 2-3 minutes)")
+print("Fitting HOG results into SVM ... (might take more than 5 minutes)")
 svm_classifier.fit(hog_features_scaled, hog_emotions)
 print("Done")
 
@@ -200,25 +200,40 @@ def process_hog(image):
     # Convert image to numpy array with float64 precision for gradient computation
     img_array = np.array(image, dtype=np.float64)
     
+    # Calculer le HOG avec des paramètres ajustés pour une meilleure visualisation
     features = hog(img_array,
-                  orientations=orientations,    # Number of orientation bins (9)
-                  pixels_per_cell=cell_size,   # Cell size for histograms (8x8)
-                  cells_per_block=block_size,  # Block size for normalization (2x2 cells)
-                  block_norm='L2-Hys',         # Normalization method
-                  feature_vector=True,         # Concatenate into 1D feature vector
-                  visualize=True)              # Get visualization
+                  orientations=orientations,             # Réduit à 8 pour des directions plus claires
+                  pixels_per_cell=cell_size,     # Cellules plus petites pour plus de détail
+                  cells_per_block=block_size,     # Maintient les blocs 2x2
+                  block_norm='L2-Hys',        # Normalisation standard
+                  visualize=True,             # Active la visualisation
+                  transform_sqrt=True)        # Applique une transformation racine carrée pour améliorer le contraste
     
     # Separate features and visualization
     hog_features, hog_image = features
     
-    # Scale features
-    hog_features_scaled = scaler.transform([hog_features])
+    # Scale features pour la classification
+    hog_features_redim = hog(img_array,
+                            orientations=orientations,
+                            pixels_per_cell=cell_size,
+                            cells_per_block=block_size,
+                            block_norm='L2-Hys',
+                            feature_vector=True)
+    hog_features_scaled = scaler.transform([hog_features_redim])
     
     # Predict emotion
     prediction = svm_classifier.predict(hog_features_scaled)
     
-    # Normalize HOG visualization for display
+    # Améliore la visualisation du HOG
+    # Normalise l'image entre 0 et 1
+    hog_image = np.clip(hog_image, 0, 10 * hog_image.mean())
+    hog_image = (hog_image - hog_image.min()) / (hog_image.max() - hog_image.min())
+    
+    # Convertit en uint8 pour l'affichage
     hog_image = (hog_image * 255).astype(np.uint8)
+    
+    # Applique une égalisation d'histogramme pour améliorer le contraste
+    hog_image = cv2.equalizeHist(hog_image)
     
     # Convert to PIL Image
     hog_image = Image.fromarray(hog_image)
@@ -255,7 +270,18 @@ TARGET_SIZE = (48, 48)  # Standard size for all images
 def start_app(AllowWebcam, WebcamNumber):
     print("app starting")
     if AllowWebcam:
-        cap = cv2.VideoCapture(WebcamNumber)
+        # Try to open the camera with different backends
+        cap = cv2.VideoCapture(int(WebcamNumber), cv2.CAP_DSHOW)  # Try DirectShow first
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(int(WebcamNumber), cv2.CAP_MSMF)  # Try Media Foundation
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(int(WebcamNumber))  # Try default
+        
+        if not cap.isOpened():
+            print(f"Failed to open camera {int(WebcamNumber)}")
+            return
+            
+        # Set camera properties
         cap.set(cv2.CAP_PROP_FPS, FPS)
         print("web cam started")
 
@@ -279,9 +305,11 @@ def start_app(AllowWebcam, WebcamNumber):
 
         # Ensure consistent size
         gray_frame_resized = cv2.resize(gray_frame, TARGET_SIZE)
+        gray_frame_resized_for_cnn = cv2.resize(gray_frame, (64,64))
 
         # Convert to PIL Image for processing
         gray_frame_pil = Image.fromarray(gray_frame_resized)
+        gray_frame_pil_for_cnn = Image.fromarray(gray_frame_resized_for_cnn)
 
         # Process with LBP + kNN
         lbp_frame, knn_prediction = process_knn(gray_frame_pil)
@@ -295,9 +323,7 @@ def start_app(AllowWebcam, WebcamNumber):
 
         # Process with mini-Xception cnn
         # Convert PIL image to numpy array
-        cnn_input = np.array(gray_frame_pil)
-        # Resize to 64x64
-        cnn_input = cv2.resize(cnn_input, (64, 64))
+        cnn_input = np.array(gray_frame_pil_for_cnn)
         # Normalize pixel values
         cnn_input = cnn_input.astype('float32') / 255.0
         # Add batch and channel dimensions
